@@ -1,4 +1,7 @@
 #include "../src/sio_client.h"
+#include "UUID_generator.h"
+#include "irb01.h"
+#include "book06.h"
 
 #include <ctime>
 #include <boost/random/random_device.hpp>
@@ -70,7 +73,9 @@ socket::ptr current_socket;
 string uuid;
 string room;
 
-Irb01 player;
+//Irb01 player;
+book06 player;
+DataPack situation;
 
 MJCard drawTile;
 MJCard throwTile;
@@ -132,6 +137,7 @@ void bind_events()
 		current_socket->emit("ready", list, [](message::list const& ack) {
 			_lock.lock();
 			player.id = ack[0]->get_int();
+			player.uid = ack[0]->get_int();
 			_lock.unlock();
 		});
 		_lock.unlock();
@@ -152,14 +158,21 @@ void bind_events()
 
 	current_socket->on("dealTile", sio::socket::event_listener_aux([&](string const& name, message::list const& data, bool isAck, message::list &ack_resp) {
 		_lock.lock();
+		
+		situation.init();
+		for (int i = 0; i < 4; i = i + 1)
+		{
+			situation.uid[i] = i;
+		}
+
 		for (int i = 0; i < 5; i++) {
 			player.Hand[i] = 0;
-			player.discards[i] = 0;
+			//player.discards[i] = 0;
 		}
-		player.eat = 0;
-		player.pon = 0;
-		player.gon = 0;
-		player.anGon = 0;
+		//player.eat = 0;
+		//player.pon = 0;
+		//player.gon = 0;
+		//player.anGon = 0;
 
 		vector<message::ptr> list = data[0]->get_vector();
 		cout << "deal tile: ";
@@ -202,10 +215,11 @@ void bind_events()
 		message::list list = message::list();
 		string tile;
 		if (onlyThrow) {
-			tile = player.Throw().toString(); // TODO: 改成 player.Throw().toString()
+			//tile = player.Throw().toString(); // TODO: 改成 player.Throw().toString()
+			tile = player.Throw(situation, MJCard(-100,-100)).toString();
 		}
 		else {
-			tile = player.Throw(drawTile).toString();
+			tile = player.Throw(situation, drawTile).toString();
 		}
 		cout << "throw: " << tile << endl;
 		list.push(tile);
@@ -219,11 +233,17 @@ void bind_events()
 	current_socket->on("broadcastThrow", sio::socket::event_listener_aux([&](string const& name, message::list const& data, bool isAck, message::list &ack_resp) {
 		_lock.lock();
 		throwTile = MJCard::StringToCard(data[1]->get_string());
-		player.discards += throwTile;
+		//player.discards += throwTile;
+		
+		int cardValue = throwTile.color * 9 + throwTile.value - (throwTile.color == 4 ? 6 : 0);
+		situation.throwSeq[data[0]->get_int()].push_back(cardValue);
+		situation.remain[cardValue] = situation.remain[cardValue] - 1;
+
 		if (data[0]->get_int() == player.id) {
 			player.Hand -= throwTile;
 			cout << "Count: " << player.Hand.Count() << " " << player.Hand.Print() << endl;
 		}
+		situation.show();
 		_lock.unlock();
 	}));
 
@@ -261,11 +281,11 @@ void bind_events()
 			else {
 				gonTile = MJCard();
 			}
-			cmd = player.WannaHuGon(canZimo, canOnPonGon, drawTile, gonTile);
+			cmd = player.WannaHuGon(situation, canZimo, canOnPonGon, drawTile, gonTile);
 		}
 		else {
 			cmd = pair<CommandType, MJCard>();
-			cmd.first  = player.WannaHGPE(canHu, canGon, canPon, canEat, throwTile, idx);
+			cmd.first  = player.WannaHGPE(situation, canHu, canGon, canPon, canEat, throwTile, idx);
 			cmd.second = throwTile;
 			if (cmd.first == COMMAND_EAT) {
 				int eat = player.Pick2Eat(throwTile);
@@ -299,52 +319,91 @@ void bind_events()
 			boost::tokenizer<>::iterator it = tok.begin();
 			MJCard firstTile = MJCard::StringToCard(*it);
 			MJCard centerTile = MJCard::StringToCard(*(++it));
+
+			int cardValue = centerTile.color * 9 + centerTile.value - (centerTile.color == 4 ? 6 : 0);
+			situation.door[player.id].push_back(vector<int>());
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+
 			for (int i = 0; i < 3; i++) {
 				if (firstTile.value + i != centerTile.value) {
 					MJCard tile = MJCard(firstTile.color, firstTile.value + i);
 					player.Hand -= tile;
-					player.discards += tile;
+					//player.discards += tile;
+
+					cardValue = tile.color * 9 + tile.value - (tile.color == 4 ? 6 : 0);
+					situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+					situation.remain[cardValue] = situation.remain[cardValue] - 1;
 				}
 			}
-			player.eat += CardTo63(firstTile);
+			//player.eat += CardTo63(firstTile);
 		}
 		else if (command == COMMAND_PON) {
 			onlyThrow = true;
 			MJCard tile = MJCard::StringToCard(tileStr);
 			for (int i = 0; i < 2; i++) {
 				player.Hand -= tile;
-				player.discards += tile;
+				//player.discards += tile;
 			}
-			player.pon |= CardTo34(tile);
+
+			int cardValue = tile.color * 9 + tile.value - (tile.color == 4 ? 6 : 0);
+			situation.door[player.id].push_back(vector<int>());
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+			situation.remain[cardValue] = situation.remain[cardValue] - 2;
+
+			//player.pon |= CardTo34(tile);
 		}
 		else if (command == COMMAND_GON) {
 			MJCard tile = MJCard::StringToCard(tileStr);
 			for (int i = 0; i < 3; i++) {
 				player.Hand -= tile;
-				player.discards += tile;
+				//player.discards += tile;
 			}
-			player.gon |= CardTo34(tile);
+			//player.gon |= CardTo34(tile);
+
+			int cardValue = tile.color * 9 + tile.value - (tile.color == 4 ? 6 : 0);
+			situation.door[player.id].push_back(vector<int>());
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+			situation.door[player.id][situation.door[player.id].size() - 1].push_back(cardValue);
+			situation.remain[cardValue] = situation.remain[cardValue] - 3;
 		}
 		else if (command == COMMAND_PONGON) {
 			MJCard tile = MJCard::StringToCard(tileStr);
 			player.Hand -= tile;
-			player.discards += tile;
-			player.pon -= CardTo34(tile);
-			player.gon |= CardTo34(tile);
+			//player.discards += tile;
+			//player.pon -= CardTo34(tile);
+			//player.gon |= CardTo34(tile);
+
+			int cardValue = tile.color * 9 + tile.value - (tile.color == 4 ? 6 : 0);
+			for (int i = 0; i < situation.door[player.id].size(); i = i + 1)
+			{
+				if (situation.door[player.id][i][0] == cardValue && situation.door[player.id][i][1] == cardValue && situation.door[player.id][i][2] == cardValue)
+				{
+					situation.door[player.id][i].push_back(cardValue);
+					situation.remain[cardValue] = situation.remain[cardValue] - 1;
+				}
+			}
 		}
 		else if (command == COMMAND_ANGON) {
 			MJCard tile = MJCard::StringToCard(tileStr);
 			for (int i = 0; i < 4; i++) {
 				player.Hand -= tile;
 			}
-			player.anGon |= CardTo34(tile);
+			//player.anGon |= CardTo34(tile);
+
+
 		}
+		situation.show();
 		_lock.unlock();
 	}));
 
 	current_socket->on("broadcastCommand", sio::socket::event_listener_aux([&](string const& name, message::list const& data, bool isAck, message::list &ack_resp) {
 		_lock.lock();
 		if (player.id != data[1]->get_int()) {
+			int idx = data[1]->get_int();
 			int command = data[2]->get_int();
 			string tileStr = data[3]->get_string();
 			if (command == COMMAND_EAT) {
@@ -352,28 +411,64 @@ void bind_events()
 				boost::tokenizer<>::iterator it = tok.begin();
 				MJCard firstTile = MJCard::StringToCard(*it);
 				MJCard centerTile = MJCard::StringToCard(*(++it));
+
+				int cardValue = centerTile.color * 9 + centerTile.value - (centerTile.color == 4 ? 6 : 0);
+				situation.door[idx].push_back(vector<int>());
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+
 				for (int i = 0; i < 3; i++) {
 					if (firstTile.value + i != centerTile.value) {
-						player.discards += MJCard(firstTile.color, firstTile.value + i);
+						//player.discards += MJCard(firstTile.color, firstTile.value + i);
+
+						MJCard temp = MJCard(firstTile.color, firstTile.value + i);
+						cardValue = temp.color * 9 + temp.value - (temp.color == 4 ? 6 : 0);
+						situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+						situation.remain[cardValue] = situation.remain[cardValue] - 1;
 					}
 				}
 			}
 			else if (command == COMMAND_PON) {
 				MJCard tile = MJCard::StringToCard(tileStr);
-				player.discards += tile;
-				player.discards += tile;
+				//player.discards += tile;
+				//player.discards += tile;
+
+				int cardValue = tile.color * 9 + tile.value - (tile.color == 4 ? 6 : 0);
+				situation.door[idx].push_back(vector<int>());
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+				situation.remain[cardValue] = situation.remain[cardValue] - 2;
 			}
 			else if (command == COMMAND_GON) {
 				MJCard tile = MJCard::StringToCard(tileStr);
-				player.discards += tile;
-				player.discards += tile;
-				player.discards += tile;
+				//player.discards += tile;
+				//player.discards += tile;
+				//player.discards += tile;
+
+				int cardValue = tile.color * 9 + tile.value - (tile.color == 4 ? 6 : 0);
+				situation.door[idx].push_back(vector<int>());
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+				situation.door[idx][situation.door[idx].size() - 1].push_back(cardValue);
+				situation.remain[cardValue] = situation.remain[cardValue] - 3;
 			}
 			else if (command == COMMAND_PONGON) {
 				MJCard tile = MJCard::StringToCard(tileStr);
-				player.discards += tile;
+				//player.discards += tile;
+
+				int cardValue = tile.color * 9 + tile.value - (tile.color == 4 ? 6 : 0);
+				for (int i = 0; i < situation.door[idx].size(); i = i + 1)
+				{
+					if (situation.door[idx][i][0] == cardValue && situation.door[idx][i][1] == cardValue && situation.door[idx][i][2] == cardValue)
+					{
+						situation.door[idx][i].push_back(cardValue);
+						situation.remain[cardValue] = situation.remain[cardValue] - 1;
+					}
+				}
 			}
 		}
+		situation.show();
 		_lock.unlock();
 	}));
 
@@ -390,7 +485,8 @@ MAIN_FUNC
     connection_listener l(h);
 
 	// create new bot
-	player = Irb01();
+	player = book06();
+	situation = DataPack();
     
     h.set_open_listener(std::bind(&connection_listener::on_connected, &l));
     h.set_close_listener(std::bind(&connection_listener::on_close, &l,std::placeholders::_1));
