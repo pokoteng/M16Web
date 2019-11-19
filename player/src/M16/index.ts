@@ -30,7 +30,7 @@ export default function MahjongStart() {
         socket.emit("auth", uuid, room, (state: number) => {
             localStorage.setItem("state", state.toString());
             if (state === -1 || state === 0) {
-                window.location.href = "./index.html";
+                window.location.href = "./room.html";
             } else if (state === 4) {
                 isPlaying = true;
             }
